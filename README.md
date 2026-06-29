@@ -64,6 +64,24 @@ TVU Virtual Campus Tour là ứng dụng web hỗ trợ người dùng tham quan
 - Quản lý mô hình nhân vật 3D, giọng đọc và phong cách hội thoại.
 - Tạo, theo dõi, hủy và kiểm tra nhật ký các tác vụ cache.
 
+### Hình ảnh minh họa
+
+#### Giao diện tham quan panorama 360° và nhân vật ViVy
+
+![Giao diện tham quan panorama 360 độ với nhân vật ViVy](docs/images/giao-dien-tham-quan-360.png)
+
+#### Trợ lý AI ViVy trả lời câu hỏi của người tham quan
+
+![Trợ lý AI ViVy trả lời câu hỏi trong giao diện tham quan](docs/images/tro-ly-ai-vivy.png)
+
+#### Bản đồ khuôn viên và chức năng tìm đường bằng A*
+
+![Bản đồ khuôn viên và chức năng tìm đường bằng thuật toán A-star](docs/images/ban-do-tim-duong-astar.png)
+
+#### Dashboard quản trị hệ thống
+
+![Dashboard quản trị TVU Virtual Campus Tour](docs/images/dashboard-quan-tri.png)
+
 ## 5. Kiến trúc hệ thống
 
 ```mermaid
@@ -166,6 +184,7 @@ Các endpoint `/api/admin/*` yêu cầu access token hợp lệ từ Supabase Au
 ```text
 tn-da22tta-110122221-nguyenthanhhieu-tvutour/
 ├── README.md
+├── docker-compose.yml           # Docker Compose gom backend + frontend
 ├── docs/
 │   ├── KhoaLuan_NguyenThanhHieu_110122221.docx
 │   ├── KhoaLuan_NguyenThanhHieu_110122221.pdf
@@ -185,12 +204,12 @@ tn-da22tta-110122221-nguyenthanhhieu-tvutour/
     │   ├── tests/
     │   ├── .env.example
     │   ├── Dockerfile
-    │   ├── docker-compose.yml
     │   └── requirements.txt
     └── frontend/
         ├── public/              # Ảnh 360°, bản đồ, audio và mô hình 3D
         ├── src/                 # App Router, features, components và stores
         ├── .env.example
+        ├── Dockerfile
         ├── package.json
         └── next.config.ts
 ```
@@ -215,7 +234,7 @@ Mã nguồn khởi tạo cấu trúc PostgreSQL, extension pgvector và các ch�
 
 ### Tùy chọn
 
-- Docker Desktop hoặc Docker Engine kèm Docker Compose để chạy backend trong container.
+- Docker Desktop hoặc Docker Engine kèm Docker Compose để chạy toàn bộ hệ thống trong container.
 - Tài khoản Supabase Auth hợp lệ để truy cập trang quản trị.
 
 ## 10. Cấu hình biến môi trường
@@ -274,6 +293,7 @@ Copy-Item .env.example .env
 | Biến | Bắt buộc | Ý nghĩa |
 |---|---:|---|
 | `NEXT_PUBLIC_API_URL` | Có | URL backend, ví dụ `http://localhost:8000` |
+| `NEXT_PUBLIC_R2_URL` | Không | URL public Cloudflare R2; mặc định `https://tvu-tour.site` |
 | `NEXT_PUBLIC_SUPABASE_URL` | Có | URL dự án Supabase |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Có | Anon key dành cho ứng dụng frontend |
 | `NEXT_PUBLIC_KIOSK_MODE` | Không | Đặt `true` để bật hành vi dành cho kiosk |
@@ -355,28 +375,35 @@ Truy cập:
 
 ## 12. Chạy bằng Docker (tùy chọn)
 
-Repository có Dockerfile và Docker Compose để khởi chạy backend trong container.
+Repository có `docker-compose.yml` ở thư mục gốc để khởi chạy cả backend và frontend trong container.
 
 ```powershell
+# Tạo file .env cho backend
 cd src/backend
 Copy-Item .env.example .env
-# Điền đầy đủ cấu hình trong .env
+# Điền đầy đủ cấu hình trong .env rồi quay lại thư mục gốc
+cd ../..
 
+# Khởi chạy toàn bộ hệ thống
 docker compose up -d --build
 docker compose ps
 ```
 
-Sau khi container hoạt động, API có tại `http://localhost:8000`. Nếu cơ sở dữ liệu chưa được khởi tạo, chạy:
+Sau khi container hoạt động:
+- Backend API: `http://localhost:8000`
+- Frontend: `http://localhost:3000`
+
+Nếu cơ sở dữ liệu chưa được khởi tạo, chạy:
 
 ```powershell
-docker compose run --rm api python -m scripts.migrate
-docker compose run --rm api python -m scripts.seed
+docker compose run --rm backend python -m scripts.migrate
+docker compose run --rm backend python -m scripts.seed
 ```
 
 Xem log:
 
 ```powershell
-docker compose logs -f api
+docker compose logs -f
 ```
 
 Dừng container:
@@ -385,7 +412,7 @@ Dừng container:
 docker compose down
 ```
 
-Docker Compose ánh xạ API ra cổng `8000` và kiểm tra sức khỏe qua `/api/health`.
+Docker Compose ánh xạ backend ra cổng `8000`, frontend ra cổng `3000`, và kiểm tra sức khỏe backend qua `/api/health`.
 
 ## 13. Build và kiểm tra chất lượng
 
