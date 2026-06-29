@@ -1,0 +1,587 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { X } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import { useTourStore } from "@/features/tour/store";
+import { useChatStore, playPrecachedAudio, _stopCurrentAudio } from "../store";
+import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
+import { isWaitingMessage } from "../messages";
+
+function TypingIndicator() {
+  return (
+    <span className="inline-flex items-center ml-1.5 gap-1 align-middle">
+      <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+      <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+      <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce"></span>
+    </span>
+  );
+}
+
+export default function ChatOverlay() {
+  const location = useTourStore((s) => s.currentLocation());
+  const isAppReady = useTourStore((s) => s.isAppReady);
+  const activeOverlay = useTourStore((s) => s.activeOverlay);
+  const avatarState = useTourStore((s) => s.avatarState);
+
+  const {
+    messages,
+    isLoading,
+    sendMessage,
+    addMessage,
+    _setMessages,
+    isTTSEnabled,
+  } = useChatStore();
+  const [input, setInput] = useState("");
+  const [dismissedSubtitleId, setDismissedSubtitleId] = useState<string | null>(null);
+  const locationId = location?.id;
+  const locationSlug = location?.slug;
+  const locationName = location?.name;
+  const locationIntroMessage = location?.introMessage;
+  const locationIntroAudioUrl = location?.intro_audio_url;
+  const locationRevisitAudioUrl = location?.revisit_audio_url;
+
+  const handleSend = (text: string) => {
+    if (!text.trim() || isLoading) return;
+    // All messages go through AI Agent — it decides whether to navigate, show media, etc.
+    sendMessage(text, locationId);
+    setInput("");
+  };
+
+  const handleSpeechResult = (text: string) => {
+    handleSend(text);
+  };
+
+  const {
+    isListening,
+    transcript,
+    startListening,
+    stopListening,
+    browserSupportsSpeechRecognition,
+  } = useSpeechRecognition(handleSpeechResult);
+
+  const [isTranscriptOpen, setIsTranscriptOpen] = useState(false);
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const prevSlugRef = useRef<string | null>(null);
+  const prevIntroSignatureRef = useRef<string | null>(null);
+
+  // Chống Echo: Tự động tắt mic khi Mascot bắt đầu nói
+  useEffect(() => {
+    if (avatarState === "speaking" && isListening) {
+      stopListening();
+    }
+  }, [avatarState, isListening, stopListening]);
+
+  // Continuous Session: location intro logic
+  const isTransitioning = useTourStore((s) => s.isTransitioning);
+
+  useEffect(() => {
+    if (!locationSlug || !locationIntroMessage || isLoading || !isAppReady || isTransitioning || activeOverlay === "map") return;
+
+    const isFirstLoad = prevSlugRef.current === null;
+    const slugChanged = prevSlugRef.current !== locationSlug;
+    const introSignature = `${locationSlug}|${locationIntroMessage}|${locationIntroAudioUrl ?? ""}|${locationRevisitAudioUrl ?? ""}`;
+    const introChangedForSameSlug =
+      !slugChanged &&
+      prevIntroSignatureRef.current !== null &&
+      prevIntroSignatureRef.current !== introSignature;
+
+    prevSlugRef.current = locationSlug;
+    prevIntroSignatureRef.current = introSignature;
+
+    if (introChangedForSameSlug) {
+      const currentMessages = useChatStore.getState().messages;
+      _setMessages(
+        currentMessages.map((message) => {
+          const isLocationIntro =
+            message.role === "assistant" &&
+            (message.id.startsWith(`intro-${locationSlug}-`) || message.id.startsWith(`nav-${locationSlug}-`));
+          return isLocationIntro ? { ...message, content: locationIntroMessage } : message;
+        }),
+      );
+      return;
+    }
+
+    if (!slugChanged) return;
+
+    if (isFirstLoad) {
+      // Lần đầu tải trang → set intro message
+      _setMessages([
+        {
+          id: `intro-${locationSlug}-${Date.now()}`,
+          role: "assistant",
+          content: locationIntroMessage,
+        },
+      ]);
+      useTourStore.getState().addVisitedLocation(locationSlug);
+
+      // Phát âm thanh nếu đang bật tiếng và app đã start (tránh phát lén lúc Reset)
+      if (
+        isTTSEnabled &&
+        locationIntroAudioUrl &&
+        useTourStore.getState().hasStarted
+      ) {
+        playPrecachedAudio(locationIntroAudioUrl);
+      }
+    } else {
+      const isRevisit = useTourStore.getState().visitedLocations.has(locationSlug);
+      
+      // Nếu đã đến rồi -> chào ngắn gọn và phát audio revisit nếu đã cache sẵn.
+      if (isRevisit) {
+        addMessage({
+          id: `nav-${locationSlug}-${Date.now()}`,
+          role: "assistant",
+          content: `Chào mừng bạn quay lại ${locationName ?? "địa điểm này"}.`,
+        });
+
+        if (
+          isTTSEnabled &&
+          locationRevisitAudioUrl &&
+          useTourStore.getState().hasStarted
+        ) {
+          playPrecachedAudio(locationRevisitAudioUrl);
+        }
+      } else {
+        // User tự bấm map hoặc AI điều hướng → append intro đầy đủ
+        addMessage({
+          id: `nav-${locationSlug}-${Date.now()}`,
+          role: "assistant",
+          content: `${locationIntroMessage}`,
+        });
+        
+        useTourStore.getState().addVisitedLocation(locationSlug);
+        
+        // Phát âm thanh
+        if (
+          isTTSEnabled &&
+          locationIntroAudioUrl &&
+          useTourStore.getState().hasStarted
+        ) {
+          playPrecachedAudio(locationIntroAudioUrl);
+        }
+      }
+    }
+  }, [
+    locationSlug,
+    locationName,
+    locationIntroMessage,
+    locationIntroAudioUrl,
+    locationRevisitAudioUrl,
+    isLoading,
+    isAppReady,
+    isTTSEnabled,
+    isTransitioning,
+    activeOverlay,
+    addMessage,
+    _setMessages,
+  ]);
+
+  // Tự động cuộn xuống cuối (Transcript)
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isTranscriptOpen]);
+
+  // KIOSK OPTIMIZATION: keep one assistant subtitle active to prevent stacked bubbles.
+  const latestAssistantIndex = messages.findLastIndex((msg) => msg.role === "assistant");
+  const latestAssistantMessage =
+    latestAssistantIndex >= 0 ? messages[latestAssistantIndex] : null;
+  const pairedUserMessage =
+    latestAssistantIndex > 0 && messages[latestAssistantIndex - 1]?.role === "user"
+      ? messages[latestAssistantIndex - 1]
+      : null;
+  const displayMessages = [
+    ...(pairedUserMessage ? [pairedUserMessage] : []),
+    ...(latestAssistantMessage ? [latestAssistantMessage] : []),
+  ];
+  const activeSubtitleId = latestAssistantMessage?.id ?? pairedUserMessage?.id ?? null;
+  const isSubtitleVisible =
+    Boolean(activeSubtitleId) && dismissedSubtitleId !== activeSubtitleId;
+
+  // Auto-hide Subtitles
+  useEffect(() => {
+    if (latestAssistantMessage) {
+      const lastMsg = latestAssistantMessage;
+
+      // Bỏ qua việc đặt timer ẩn đi nếu đang hiển thị câu chờ
+      if (lastMsg.isStreaming && isWaitingMessage(lastMsg.content)) {
+        return;
+      }
+
+      // Tính thời gian hiển thị: 8s cơ bản + 50ms cho mỗi ký tự. Max 30s.
+      const duration = Math.min(
+        30000,
+        Math.max(8000, (lastMsg.content?.length || 0) * 50),
+      );
+      const timer = setTimeout(() => {
+        setDismissedSubtitleId(lastMsg.id);
+      }, duration);
+      return () => clearTimeout(timer);
+    }
+  }, [latestAssistantMessage]);
+
+  const suggestedQuestions = location?.suggestedQuestions || [];
+
+  // Hide subtitles and suggestions when a fullscreen visual overlay is active.
+  const isVisualOverlayActive = activeOverlay === "map" || activeOverlay === "info";
+
+  return (
+    <>
+      {/* === DYNAMIC SUBTITLES (Speech Bubbles) === */}
+      <AnimatePresence>
+        {isSubtitleVisible &&
+          !isVisualOverlayActive &&
+          displayMessages.map((msg) => {
+            if (msg.role === "assistant") {
+              return (
+                <motion.div
+                  key={msg.id}
+                  initial={{ opacity: 0, scale: 0.8, x: -20, y: 20 }}
+                  animate={{ opacity: 1, scale: 1, x: 0, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.8, y: 10 }}
+                  className="fixed right-[30%] top-[15%] w-[420px] max-w-[40vw] z-50 pointer-events-auto origin-bottom-right"
+                >
+                    <div className="relative bg-white/60 backdrop-blur-2xl text-gray-900 rounded-[28px] border border-white/75 shadow-[0_18px_55px_rgba(15,23,42,0.18)] flex flex-col max-h-[55vh] overflow-hidden">
+                    {/* Row 1: Close button */}
+                    <div className="flex justify-end px-4 pt-3 pb-0 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (activeSubtitleId) setDismissedSubtitleId(activeSubtitleId);
+                        }}
+                        className="h-6 w-6 rounded-full bg-black/8 text-gray-600 hover:bg-black/16 hover:text-gray-900 transition-colors flex items-center justify-center"
+                        title="Ẩn phụ đề"
+                        aria-label="Ẩn phụ đề"
+                      >
+                        <X className="h-3.5 w-3.5" strokeWidth={2.5} />
+                      </button>
+                    </div>
+                    {/* Row 2: Content */}
+                    <div className="overflow-y-auto px-6 pb-10 flex-1 whitespace-pre-wrap text-pretty text-[16px] leading-relaxed font-medium [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                      <ReactMarkdown
+                        components={{
+                          p: ({ node, ...props }) => {
+                            void node;
+                            return <p className="mb-2 text-pretty last:mb-0" {...props} />;
+                          },
+                          strong: ({ node, ...props }) => {
+                            void node;
+                            return <strong className="font-bold text-blue-600" {...props} />;
+                          },
+                          ul: ({ node, ...props }) => {
+                            void node;
+                            return <ul className="list-disc pl-5 mb-2" {...props} />;
+                          },
+                          ol: ({ node, ...props }) => {
+                            void node;
+                            return <ol className="list-decimal pl-5 mb-2" {...props} />;
+                          },
+                          li: ({ node, ...props }) => {
+                            void node;
+                            return <li className="mb-1" {...props} />;
+                          },
+                        }}
+                      >
+                        {msg.content}
+                      </ReactMarkdown>
+                      {msg.isStreaming && isWaitingMessage(msg.content) && <TypingIndicator />}
+                    </div>
+                    {/* Edge TTS fallback indicator */}
+                    {msg.ttsProvider === "edge-tts" && (
+                      <div className="absolute bottom-2 left-4 z-20">
+                        <span className="px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-300 text-[10px] font-medium border border-orange-400/20">
+                          ⚠ Fallback Voice
+                        </span>
+                      </div>
+                    )}
+                    {/* Fade-out Overlay for Kiosk touch scrolling hint */}
+                    <div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-white/55 to-transparent pointer-events-none rounded-bl-[28px] rounded-br-[28px]" />
+                    {msg.isStreaming && !isWaitingMessage(msg.content) && (
+                      <motion.span
+                        className="inline-block w-1.5 h-4 ml-1.5 bg-gray-800/70 align-middle"
+                        animate={{ opacity: [1, 0] }}
+                        transition={{
+                          repeat: Infinity,
+                          duration: 0.8,
+                          ease: "linear",
+                        }}
+                      />
+                    )}
+
+                  </div>
+                </motion.div>
+              );
+            }
+
+            if (msg.role === "user") {
+              return (
+                <motion.div
+                  key={msg.id}
+                  initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -10, scale: 0.95 }}
+                  className="fixed bottom-[260px] left-1/2 -translate-x-1/2 w-max max-w-[400px] z-40 pointer-events-auto flex justify-center"
+                >
+                  <div className="bg-blue-600/90 text-white px-6 py-3 rounded-full border border-blue-400/30 shadow-xl backdrop-blur-2xl">
+                    <span className="whitespace-pre-wrap text-[15px] font-medium">
+                      {msg.content}
+                    </span>
+                  </div>
+                </motion.div>
+              );
+            }
+            return null;
+          })}
+      </AnimatePresence>
+
+      {/* === BOTTOM CONTROLS WRAPPER === */}
+      <div className="fixed bottom-11 left-1/2 -translate-x-1/2 flex flex-col items-center gap-4 z-40 w-full max-w-3xl pointer-events-none">
+        {/* === QUICK ACTIONS (SUGGESTED QUESTIONS) === */}
+        {suggestedQuestions.length > 0 && !isVisualOverlayActive && (
+          <div className="flex max-w-[660px] flex-wrap justify-center gap-2 pointer-events-auto px-4">
+            {suggestedQuestions.map((q, idx) => (
+              <motion.button
+                key={idx}
+                onClick={() => handleSend(q)}
+                className="min-h-9 max-w-[310px] px-3.5 py-1.5 bg-[#121511]/34 hover:bg-[#121511]/54 backdrop-blur-xl border border-white/[0.12] text-white/82 font-semibold text-[13px] leading-tight rounded-full shadow-[0_7px_18px_rgba(0,0,0,0.18)] hover:shadow-white/10 hover:-translate-y-0.5 active:scale-95 transition-all flex items-center gap-2"
+              >
+                {q}
+              </motion.button>
+            ))}
+          </div>
+        )}
+
+        {/* === VOICE HUB (Premium Dark Glass) === */}
+        <div className="bg-[#121511]/54 backdrop-blur-3xl border border-white/[0.14] shadow-[0_14px_38px_rgba(0,0,0,0.32)] rounded-[3rem] pl-3 pr-2 py-2 flex items-center gap-3 pointer-events-auto relative overflow-hidden w-[90%] sm:w-[500px]">
+          {/* Subtle glass shimmer */}
+          <div className="absolute inset-0 bg-gradient-to-tr from-white/0 via-white/5 to-white/0 skew-x-12 opacity-50 pointer-events-none"></div>
+
+          {/* Transcript Toggle Button */}
+          <button
+            onClick={() => setIsTranscriptOpen(!isTranscriptOpen)}
+            className={`w-11 h-11 flex items-center justify-center rounded-full transition-all z-10 shrink-0 ${
+              isTranscriptOpen
+                ? "bg-white/20 text-white"
+                : "hover:bg-white/10 text-white/70"
+            }`}
+            title="Lịch sử trò chuyện"
+          >
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
+          </button>
+
+          <div className="flex-1 flex justify-start items-center z-10 w-full border-l border-white/10 pl-3">
+            {isListening ? (
+              <div className="flex items-center gap-4">
+                <div className="flex justify-center gap-1.5 items-center">
+                  {[4, 8, 12, 16, 10, 6, 14, 8, 3].map((val, idx) => (
+                    <motion.div
+                      key={idx}
+                      className="w-1.5 bg-red-400 rounded-full shadow-[0_0_8px_rgba(248,113,113,0.8)]"
+                      animate={{
+                        height: [`${val}px`, `${val * 1.5}px`, `${val}px`],
+                      }}
+                      transition={{
+                        repeat: Infinity,
+                        duration: 0.8,
+                        delay: idx * 0.1,
+                      }}
+                    />
+                  ))}
+                </div>
+                <span className="font-medium text-red-400 text-[17px] tracking-wide animate-pulse">
+                  {transcript || "Đang lắng nghe..."}
+                </span>
+              </div>
+            ) : (
+              <div className="flex w-full items-center min-w-0">
+                <input
+                  type="text"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSend(input);
+                  }}
+                  disabled={isLoading}
+                  placeholder="Nhập câu hỏi hoặc bấm mic..."
+                  className="min-w-0 w-full bg-transparent text-white placeholder:text-white/45 text-[16px] font-medium outline-none disabled:opacity-50 pr-4"
+                />
+                <AnimatePresence>
+                  {input.trim() && !isLoading && (
+                    <motion.button
+                      initial={{ opacity: 0, scale: 0.5 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.5 }}
+                      onClick={() => handleSend(input)}
+                      className="ml-2 w-10 h-10 shrink-0 flex items-center justify-center rounded-full bg-blue-600 text-white shadow-[0_0_15px_rgba(37,99,235,0.4)] hover:bg-blue-500 active:scale-90 transition-all"
+                    >
+                      <svg
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                      >
+                        <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+                      </svg>
+                    </motion.button>
+                  )}
+                </AnimatePresence>
+              </div>
+            )}
+          </div>
+
+          {/* Mic Button */}
+          {browserSupportsSpeechRecognition && (
+            <button
+              onClick={() => {
+                if (isListening) {
+                  stopListening();
+                } else {
+                  // Nếu Mascot đang phát giọng nói dở dang, ngắt lời ngay lập tức để người dùng nói
+                  if (avatarState === "speaking") {
+                    _stopCurrentAudio();
+                  }
+                  startListening();
+                }
+              }}
+              className={`w-15 h-15 rounded-full flex items-center justify-center relative group hover:scale-105 active:scale-95 transition-all z-10 shrink-0 ${
+                isListening
+                  ? "bg-red-500 text-white shadow-[0_0_30px_rgba(239,68,68,0.6)]"
+                  : "bg-white text-blue-800 shadow-[0_0_20px_rgba(255,255,255,0.2)]"
+              }`}
+            >
+              <div
+                className={`absolute inset-0 rounded-full border-[3px] scale-110 transition-colors ${
+                  isListening
+                    ? "border-red-500/40 animate-ping"
+                    : "border-white/20"
+                }`}
+              ></div>
+              <svg
+                width="28"
+                height="28"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+              >
+                <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.91-3c-.49 0-.9.36-.98.85C16.52 14.2 14.47 16 12 16s-4.52-1.8-4.93-4.15c-.08-.49-.49-.85-.98-.85-.61 0-1.09.54-1 1.14.49 3 2.89 5.35 5.91 5.78V20c0 .55.45 1 1 1s1-.45 1-1v-2.08c3.02-.43 5.42-2.78 5.91-5.78.1-.6-.39-1.14-1-1.14z" />
+              </svg>
+            </button>
+          )}
+        </div>
+      </div>
+      {/* END BOTTOM CONTROLS WRAPPER */}
+
+      {/* === EXPANDABLE TRANSCRIPT (Right Side Panel) === */}
+      <AnimatePresence>
+        {isTranscriptOpen && (
+          <motion.div
+            initial={{ opacity: 0, x: -50, scale: 0.95 }}
+            animate={{ opacity: 1, x: 0, scale: 1 }}
+            exit={{ opacity: 0, x: -50, scale: 0.95 }}
+            transition={{ type: "spring", damping: 25, stiffness: 200 }}
+            className="fixed left-6 bottom-24 w-[380px] h-[60vh] max-h-[600px] bg-black/60 backdrop-blur-3xl border border-white/10 rounded-3xl shadow-2xl overflow-hidden flex flex-col pointer-events-auto z-40"
+          >
+            <div className="p-4 border-b border-white/10 bg-white/5 flex items-center justify-between">
+              <h3 className="text-white font-medium flex items-center gap-2">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                </svg>
+                Lịch sử trò chuyện
+              </h3>
+              <button
+                onClick={() => setIsTranscriptOpen(false)}
+                className="text-white/50 hover:text-white transition-colors"
+              >
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 custom-scrollbar">
+              {messages.map((msg) => {
+                const isUser = msg.role === "user";
+                return (
+                  <div
+                    key={msg.id}
+                    className={`flex ${isUser ? "justify-end" : "justify-start"}`}
+                  >
+                    <div
+                      className={`max-w-[85%] px-4 py-3 rounded-2xl text-[15px] leading-relaxed ${
+                        isUser
+                          ? "bg-blue-600/80 text-white rounded-tr-sm"
+                          : "bg-white/10 text-white/90 rounded-tl-sm"
+                      }`}
+                    >
+                      {isUser ? (
+                        <span className="whitespace-pre-wrap">
+                          {msg.content}
+                        </span>
+                      ) : (
+                        <div className="whitespace-pre-wrap text-pretty [&>p]:mb-2 [&>p:last-child]:mb-0">
+                          <ReactMarkdown
+                            components={{
+                              p: ({ node, ...props }) => {
+                                void node;
+                                return <p className="mb-2 text-pretty last:mb-0" {...props} />;
+                              },
+                              strong: ({ node, ...props }) => {
+                                void node;
+                                return <strong className="font-bold text-blue-300" {...props} />;
+                              },
+                              ul: ({ node, ...props }) => {
+                                void node;
+                                return <ul className="list-disc pl-5 mb-2" {...props} />;
+                              },
+                              ol: ({ node, ...props }) => {
+                                void node;
+                                return <ol className="list-decimal pl-5 mb-2" {...props} />;
+                              },
+                              li: ({ node, ...props }) => {
+                                void node;
+                                return <li className="mb-1" {...props} />;
+                              },
+                            }}
+                          >
+                            {msg.content}
+                          </ReactMarkdown>
+                          {msg.isStreaming && isWaitingMessage(msg.content) && <TypingIndicator />}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+              <div ref={transcriptEndRef} />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+}
