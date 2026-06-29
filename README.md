@@ -84,24 +84,9 @@ TVU Virtual Campus Tour là ứng dụng web hỗ trợ người dùng tham quan
 
 ## 5. Kiến trúc hệ thống
 
-```mermaid
-flowchart LR
-    Visitor["Người tham quan"] --> FE["Frontend<br/>Next.js + React"]
-    Admin["Quản trị viên"] --> FE
-    FE -->|"REST / SSE"| API["Backend API<br/>FastAPI"]
-    FE -->|"Đăng nhập"| Auth["Supabase Auth"]
+![Sơ đồ kiến trúc tổng thể của hệ thống](docs/images/kien-truc-tong-the.png)
 
-    subgraph Backend["Kiến trúc phân lớp"]
-        API --> Router["Router"]
-        Router --> Service["Service"]
-        Service --> Repository["Repository"]
-    end
-
-    Repository --> DB["Supabase PostgreSQL<br/>pgvector"]
-    Service --> Gemini["Google Gemini<br/>Chat · Embedding · TTS"]
-    Service --> R2["Cloudflare R2<br/>Ảnh · Video · Tài liệu"]
-    Router -->|"Xác minh access token"| Auth
-```
+![Luồng tương tác giữa người dùng, frontend, backend và AI Agent](docs/images/luong-tuong-tac.png)
 
 Backend tuân theo mô hình **Router → Service → Repository**:
 
@@ -114,21 +99,11 @@ Backend tuân theo mô hình **Router → Service → Repository**:
 
 ### Luồng RAG
 
-```mermaid
-flowchart LR
-    Doc["PDF / DOCX"] --> Extract["Trích xuất văn bản"]
-    Extract --> Chunk["Chia đoạn"]
-    Chunk --> EmbedDoc["Gemini Embedding"]
-    EmbedDoc --> VectorDB["PostgreSQL + pgvector"]
-
-    Question["Câu hỏi người dùng"] --> Agent["Gemini Agent"]
-    Agent -->|"search_documents"| EmbedQuery["Embedding truy vấn"]
-    EmbedQuery --> VectorDB
-    VectorDB --> Context["Các đoạn liên quan"]
-    Context --> Answer["Gemini tổng hợp câu trả lời có căn cứ"]
-```
+![Pipeline nhập liệu tài liệu vào kho tri thức RAG](docs/images/pipeline-rag.png)
 
 ### AI Agent Tools
+
+![Cơ chế phối hợp giữa AI Agent và giao diện thông qua Function Calling](docs/images/function-calling.png)
 
 ViVy sử dụng Gemini Function Calling với bốn công cụ đang hoạt động:
 
